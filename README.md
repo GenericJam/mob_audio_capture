@@ -52,6 +52,15 @@ the plugin contributes is necessary but not sufficient — it's a runtime permis
 
 ## Status
 
-Scaffolded 2026-06-29. Elixir API + plugin manifest + native skeletons (Android zig
-NIF + Kotlin `AudioPlaybackCapture` bridge + iOS unsupported stub) are in place and
-host-green. **Native paths are not yet device-verified** — see `PLAN.md`.
+Scaffolded 2026-06-29; **Android device-verified 2026-07-04** on a moto g power
+(2021), Android 11 / API 30. The full capture lifecycle was exercised over dist RPC:
+`start/1` raised the MediaProjection consent dialog and delivered
+`{:audio_capture, :permission, :granted}`; `output_level/0` read `:silent` with
+nothing playing, live `{rms, peak}` (rms ≈ −12…−18 dBFS, peak ≈ −2…−8 dBFS) tracking
+audio from another app, and `:silent` again on pause; `stop/1` tore the session down
+cleanly (`{:error, :not_capturing}`). See
+`decisions/2026-07-04-android-device-verification.md`.
+
+`MobAudioCapture.DemoScreen` ships for manual spot-checks (Start + a live meter). iOS
+remains an `:unsupported_on_platform` stub. Release plumbing (signing key, CI, hooks)
+is still outstanding — see `PLAN.md`.

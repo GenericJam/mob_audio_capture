@@ -27,14 +27,19 @@ test-environment dependency.
 
 ## TODO before a real release
 
-1. **Device-verify on Android 11+** (the gate — a native-table mismatch is a silent
-   boot crash):
-   - host app boots with the plugin linked;
-   - `start/1` raises the consent dialog; granting → `{:audio_capture, :permission,
-     :granted}`; denying → `:denied`;
-   - with a game (e.g. `mob_doom`) producing audio, `output_level/0` reads a non-silent
-     `{rms, peak}`, and `:silent` when nothing plays;
-   - confirm the FGS notification appears and capture stops cleanly on `stop/1`.
+1. **Device-verify on Android 11+** — ✅ **Done 2026-07-04** on a moto g power (2021),
+   Android 11 / API 30, driven over dist RPC from a throwaway `--blank --android` host
+   app with the plugin activated (see
+   `decisions/2026-07-04-android-device-verification.md`):
+   - ✅ host app boots with the plugin linked — the NIF loads (`output_level/0` returns
+     `{:error, :not_capturing}` pre-start, so no native-table mismatch);
+   - ✅ `start/1` raises the consent dialog; granting → `{:audio_capture, :permission,
+     :granted}`;
+   - ✅ with another app producing audio, `output_level/0` reads a non-silent
+     `{rms, peak}` (rms ≈ −12…−18, peak ≈ −2…−8 dBFS), and `:silent` when nothing plays;
+   - ✅ capture stops cleanly on `stop/1` (`{:error, :not_capturing}`). The FGS
+     notification was not separately eyeballed; the service started (capture ran).
+   - Not yet exercised: the `:denied` path.
 2. **Verify the host-manifest service contribution.** The plugin manifest can't yet add
    an `AndroidManifest` `<service>` fragment, so `:host_requirements` warns the author.
    Confirm the SecurityException path when the service is missing, and document the

@@ -1,16 +1,15 @@
 defmodule MobAudioCapture do
   @moduledoc """
-  Capture the **device's whole output mix** from inside a Mob app — including audio
-  produced by *other* apps and by native players (a game's own `AudioTrack`) that
-  bypass `Mob.Audio`.
+  **Android only.** Capture the **device's whole output mix** from inside a Mob app —
+  including audio produced by *other* apps and by native players (a game's own
+  `AudioTrack`) that bypass `Mob.Audio`.
 
-  This is the capability `Mob.Audio.output_level(source: :mix)` deliberately does
-  *not* provide. A normal app cannot tap the global output mix with a session-0
-  `Visualizer` (privileged: `ERROR_NO_INIT`), so this plugin uses the
-  consent-gated `MediaProjection` + `AudioPlaybackCapture` path (Android API 29+)
-  instead. Because capture requires a per-session system consent dialog and a typed
-  foreground service, it is intended as a **test-environment dependency** for
-  agent-driven verification, not a capability you ship in a production app.
+  A normal app cannot tap the global output mix with a session-0 `Visualizer`
+  (privileged: `ERROR_NO_INIT`), so this plugin uses the consent-gated
+  `MediaProjection` + `AudioPlaybackCapture` path (Android API 29+). Because capture
+  requires a per-session system consent dialog and a typed foreground service, it is a
+  **test-environment dependency** for agent-driven verification, not a capability you
+  ship in a production app.
 
   ## Platform support
 
@@ -18,8 +17,11 @@ defmodule MobAudioCapture do
       source app's `allowAudioPlaybackCapture` (default-on for non-privileged apps
       targeting API 29+; `VOICE_COMMUNICATION` usage and DRM output are never
       captured by design).
-    * **iOS:** unsupported — there is no public inter-app/system output capture API.
-      Every call returns `{:error, :unsupported_on_platform}`.
+    * **iOS: not supported, and not possible.** Apple provides no public API for an app
+      to capture another app's or the system's audio output (a sandbox/privacy limit).
+      Every call returns `{:error, :unsupported_on_platform}` — this is permanent, not a
+      pending feature. To check your *own* app's audio instead (e.g. a game engine
+      running inside the Mob app), meter it at the source rather than using this plugin.
 
   ## Usage
 

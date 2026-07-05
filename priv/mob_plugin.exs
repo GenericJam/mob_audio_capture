@@ -9,6 +9,12 @@
       "cannot reach. A normal app may not tap the global mix with a session-0 Visualizer, " <>
       "so this uses the privileged-by-consent MediaProjection path instead. Intended as " <>
       "a TEST-ENVIRONMENT dependency, not a shipped capability.",
+  # A sample screen the host can navigate to by route (auto-listed by a home that
+  # enumerates Mob.Plugins.screens/0). Pure-Elixir + hot-pushable; drop it and this
+  # entry in a real app.
+  screens: [
+    %{module: MobAudioCapture.DemoScreen, default_route: "/mob_audio_capture/demo"}
+  ],
   nifs: [
     # Android: zig NIF bridging to the Kotlin io.mob.audiocapture.MobAudioCaptureBridge
     # (MediaProjection consent → AudioPlaybackCaptureConfiguration → AudioRecord →

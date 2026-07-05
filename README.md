@@ -1,25 +1,32 @@
 # mob_audio_capture
 
-Global **device-audio capture** for [Mob](https://github.com/GenericJam/mob) apps —
-meter or stream the device's output mix, including audio produced by *other* apps
-and by native players (a game's own `AudioTrack`) that bypass `Mob.Audio`.
+**Android only.** Meter the **device's output mix** from inside a [Mob](https://github.com/GenericJam/mob)
+app — including audio produced by *other* apps and by native players (a game's own
+`AudioTrack`) that bypass `Mob.Audio`.
 
-This is the capability `Mob.Audio.output_level(source: :mix)` deliberately does not
-provide. A normal app cannot tap the global output mix with a session-0 `Visualizer`
+A normal app cannot tap the global output mix with a session-0 `Visualizer`
 (privileged — `ERROR_NO_INIT` on Android, device-verified), so this plugin uses the
 consent-gated `MediaProjection` + `AudioPlaybackCapture` path (Android API 29+).
 
 Because capture requires a per-session system consent dialog and a typed foreground
-service, it is intended as a **test-environment dependency** for agent-driven
-verification ("is the bundled game's audio actually producing signal?"), not a
-capability you ship in a production app.
+service, it is a **test-environment dependency** for agent-driven verification ("is
+the bundled game's audio actually producing signal?"), not a capability you ship in a
+production app.
+
+> ⚠️ **iOS is not supported — and this capability is _not possible_ on iOS.** Apple
+> exposes no API for one app to capture another app's or the system's audio output;
+> it's a hard sandbox/privacy restriction. The iOS build is a **permanent**
+> `:unsupported_on_platform` stub, not a pending feature. **If you only need to detect
+> your _own_ app's audio** (e.g. a game engine running inside the Mob app), don't use
+> this plugin — meter the audio at its source instead; that works on every platform and
+> needs no capture API.
 
 ## Platform support
 
 | Platform | Support |
 |----------|---------|
 | Android 10+ (API 29) | Full output-mix capture, subject to each source app's `allowAudioPlaybackCapture` (default-on for non-privileged API 29+ apps; `VOICE_COMMUNICATION` and DRM output never captured). |
-| iOS | **Unsupported** — no public inter-app/system output capture API. Every call returns `{:error, :unsupported_on_platform}`. |
+| iOS | **Not supported — and not possible.** No public API exists for an app to capture another app's or the system's output (sandbox/privacy restriction); this is permanent, not a pending feature. Every call returns `{:error, :unsupported_on_platform}`. |
 
 ## Usage
 
@@ -52,15 +59,15 @@ the plugin contributes is necessary but not sufficient — it's a runtime permis
 
 ## Status
 
-Scaffolded 2026-06-29; **Android device-verified 2026-07-04** on a moto g power
-(2021), Android 11 / API 30. The full capture lifecycle was exercised over dist RPC:
-`start/1` raised the MediaProjection consent dialog and delivered
-`{:audio_capture, :permission, :granted}`; `output_level/0` read `:silent` with
-nothing playing, live `{rms, peak}` (rms ≈ −12…−18 dBFS, peak ≈ −2…−8 dBFS) tracking
-audio from another app, and `:silent` again on pause; `stop/1` tore the session down
-cleanly (`{:error, :not_capturing}`). See
-`decisions/2026-07-04-android-device-verification.md`.
+**Device-verified on both platforms, 2026-07-04.**
 
-`MobAudioCapture.DemoScreen` ships for manual spot-checks (Start + a live meter). iOS
-remains an `:unsupported_on_platform` stub. Release plumbing (signing key, CI, hooks)
-is still outstanding — see `PLAN.md`.
+- **Android** (moto g power 2021, Android 11 / API 30) — the full lifecycle over dist
+  RPC: `start/1` → MediaProjection consent → `{:audio_capture, :permission, :granted}`;
+  `output_level/0` read `:silent` at rest, live `{rms, peak}` (rms ≈ −12…−18 dBFS,
+  peak ≈ −2…−8 dBFS) tracking another app's audio, `:silent` on pause; `stop/1` →
+  `{:error, :not_capturing}`. See `decisions/2026-07-04-android-device-verification.md`.
+- **iOS** (physical iPhone SE, `aarch64-apple-ios`) — the stub links, loads, and every
+  call returns `{:error, :unsupported_on_platform}`: the correct, permanent behavior.
+
+`MobAudioCapture.DemoScreen` ships for manual spot-checks (Start + a live meter). Signed
+with the shared mob first-party key and released via CI (`.github/workflows/release.yml`).

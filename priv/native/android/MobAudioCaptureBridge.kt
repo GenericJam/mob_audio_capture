@@ -76,7 +76,26 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     @JvmStatic fun register() = nativeRegister()
 
     override fun setActivity(activity: Activity) {
+        val previous = activityRef?.get()
         activityRef = WeakReference(activity)
+        if (previous == null || previous === activity) return
+        // The activity was recreated while a consent dialog was up. Its result will be
+        // dispatched to the new activity's registry, which restored the request key but
+        // not our callback; register it again under the same key so the result reaches
+        // us instead of parking there and leaving the request pending forever.
+        val req = synchronized(lock) { pending?.takeIf { it.data == null } } ?: return
+        val owner = activity as? ActivityResultRegistryOwner
+        if (owner == null) {
+            failPending(req)
+            return
+        }
+        try {
+            registerConsentCallback(owner, req)
+            Log.i(TAG, "activity recreated; consent token=${req.token} re-registered")
+        } catch (e: Throwable) {
+            Log.e(TAG, "consent re-register failed: ${e.message}")
+            failPending(req)
+        }
     }
 
     // One start() call: the pid that asked, its capture config and, once the user grants
@@ -106,7 +125,16 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     // ── NIF entry points (called from zig) ─────────────────────────────────
 
     @JvmStatic
-    fun audio_capture_start(pid: Long, configJson: String): Int {
+    fun audio_capture_start(pid: Long, configJson: String): Int =
+        try {
+            startRequest(pid, configJson)
+        } catch (e: Throwable) {
+            // Never leave a Java exception pending on the NIF thread.
+            Log.e(TAG, "start failed: ${e.message}", e)
+            START_DENIED
+        }
+
+    private fun startRequest(pid: Long, configJson: String): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return START_DENIED // AudioPlaybackCapture is API 29+
         // The caller must request RECORD_AUDIO at runtime first.
         if (!hasRecordAudio()) return START_DENIED
@@ -131,15 +159,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         return try {
             val mpm =
                 activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            var launcher: ActivityResultLauncher<Intent>? = null
-            launcher = owner.activityResultRegistry.register(
-                "mob_audio_capture_consent_${req.token}",
-                ActivityResultContracts.StartActivityForResult(),
-            ) { result ->
-                launcher?.unregister()
-                onConsentResult(req, result.resultCode, result.data)
-            }
-            launcher.launch(mpm.createScreenCaptureIntent())
+            registerConsentCallback(owner, req).launch(mpm.createScreenCaptureIntent())
             Log.i(TAG, "consent requested token=${req.token}")
             START_PENDING
         } catch (e: Throwable) {
@@ -147,6 +167,21 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
             synchronized(lock) { if (pending === req) pending = null }
             START_DENIED
         }
+    }
+
+    private fun registerConsentCallback(
+        owner: ActivityResultRegistryOwner,
+        req: CaptureRequest,
+    ): ActivityResultLauncher<Intent> {
+        var launcher: ActivityResultLauncher<Intent>? = null
+        launcher = owner.activityResultRegistry.register(
+            "mob_audio_capture_consent_${req.token}",
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result ->
+            launcher?.unregister()
+            onConsentResult(req, result.resultCode, result.data)
+        }
+        return launcher
     }
 
     @JvmStatic
@@ -186,6 +221,9 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     // Granted: getMediaProjection() is illegal until a mediaProjection-typed foreground
     // service is running. Keep the result on the request and start AudioCaptureService
     // with the token; it foregrounds itself and calls beginCaptureFromService.
+    //
+    // Outcome messages are sent while holding lock, so once stop() returns, no outcome
+    // for the request it cancelled can still arrive (enif_send does not block).
     private fun onConsentResult(req: CaptureRequest, resultCode: Int, data: Intent?) {
         val granted = resultCode == Activity.RESULT_OK && data != null
         synchronized(lock) {
@@ -193,16 +231,13 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
                 Log.i(TAG, "dropping stale consent result token=${req.token} granted=$granted; projection not acquired")
                 return
             }
-            if (granted) {
-                req.resultCode = resultCode
-                req.data = data
-            } else {
+            if (!granted) {
                 pending = null
+                nativeDeliverPermission(req.pid, false)
+                return
             }
-        }
-        if (!granted) {
-            nativeDeliverPermission(req.pid, false)
-            return
+            req.resultCode = resultCode
+            req.data = data
         }
         val activity = activityRef?.get()
         if (activity == null) {
@@ -223,11 +258,11 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         }
     }
 
-    private fun failPending(req: CaptureRequest) {
-        val wasPending = synchronized(lock) {
-            (pending === req).also { if (it) pending = null }
+    private fun failPending(req: CaptureRequest) = synchronized(lock) {
+        if (pending === req) {
+            pending = null
+            nativeDeliverPermission(req.pid, false)
         }
-        if (wasPending) nativeDeliverPermission(req.pid, false)
     }
 
     // Called from AudioCaptureService.onStartCommand once it is foregrounded as type
@@ -235,7 +270,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     // matches the pending request is stale: stop that service start and acquire nothing.
     @RequiresApi(Build.VERSION_CODES.Q)
     internal fun beginCaptureFromService(service: Service, token: Long, startId: Int) {
-        val (req, granted) = synchronized(lock) {
+        synchronized(lock) {
             val req = pending
             val data = req?.data
             if (req == null || req.token != token || data == null) {
@@ -244,9 +279,8 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
                 return
             }
             pending = null
-            req to startCaptureLocked(service, req, data)
+            nativeDeliverPermission(req.pid, startCaptureLocked(service, req, data))
         }
-        nativeDeliverPermission(req.pid, granted)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)

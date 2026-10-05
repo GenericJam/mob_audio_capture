@@ -55,7 +55,9 @@ defmodule MobAudioCapture do
   `{:audio_capture, :start_error, :busy}` instead, and the earlier request keeps
   its own config and caller. Calling `stop/1` while a request is pending cancels
   it: granting consent afterwards starts nothing and sends no message. `start/2`
-  while a capture is running stops it and asks for consent again.
+  while a capture is running stops it and asks for consent again. If a consent
+  result is ever lost (the app's activity was finished while the dialog was up),
+  `stop/1` also clears the stuck request.
 
   `{:audio_capture, :permission, :denied}` is also sent straight away, without a
   dialog, below Android 10 (API 29), when `RECORD_AUDIO` hasn't been granted at

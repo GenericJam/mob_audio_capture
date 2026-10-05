@@ -38,6 +38,7 @@ defmodule MobAudioCapture.DemoScreen do
 
   defp status_text(%{capturing: true}), do: "Waiting for capture consent…"
   defp status_text(%{permission: :denied}), do: "Consent denied — tap Start to retry"
+  defp status_text(%{permission: :busy}), do: "Another consent request is pending"
   defp status_text(_), do: "Tap Start, then accept the consent dialog"
 
   defp level_text(%{level: nil}), do: "—"
@@ -72,5 +73,9 @@ defmodule MobAudioCapture.DemoScreen do
 
   def handle_info({:audio_capture, :permission, result}, socket) do
     {:noreply, Mob.Socket.assign(socket, :permission, result)}
+  end
+
+  def handle_info({:audio_capture, :start_error, :busy}, socket) do
+    {:noreply, Mob.Socket.assign(socket, capturing: false, permission: :busy)}
   end
 end

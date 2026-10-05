@@ -6,7 +6,7 @@ defmodule MobAudioCapture.MixProject do
   def project do
     [
       app: :mob_audio_capture,
-      version: "0.1.1",
+      version: "0.1.2",
       elixir: "~> 1.17",
       deps: deps(),
       aliases: aliases(),

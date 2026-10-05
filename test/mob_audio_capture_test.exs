@@ -3,6 +3,25 @@ defmodule MobAudioCaptureTest do
 
   alias MobAudioCapture
 
+  describe "start_message/1 (what start/2 sends the caller at once)" do
+    test "consent pending: nothing now, the outcome arrives from native later" do
+      assert MobAudioCapture.start_message(:ok) == nil
+    end
+
+    test "another request's consent is pending: :busy, not a permission outcome" do
+      assert MobAudioCapture.start_message(:busy) == {:audio_capture, :start_error, :busy}
+    end
+
+    test "refused before any dialog: :denied" do
+      assert MobAudioCapture.start_message(:denied) == {:audio_capture, :permission, :denied}
+    end
+
+    test "iOS stub or a JNI failure: nothing" do
+      assert MobAudioCapture.start_message(:unsupported_on_platform) == nil
+      assert MobAudioCapture.start_message(:error) == nil
+    end
+  end
+
   describe "capture_opts/1" do
     test "defaults to media + game + unknown usages, as strings" do
       assert MobAudioCapture.capture_opts([]) ==

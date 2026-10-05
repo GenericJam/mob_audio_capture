@@ -4,8 +4,9 @@
 //! `io.mob.audiocapture.MobAudioCaptureBridge`: a MediaProjection consent dialog →
 //! AudioPlaybackCaptureConfiguration → AudioRecord, with a capture thread computing
 //! RMS/peak of the output mix. Three NIFs call static bridge methods:
-//!   audio_capture_start(pid, json)  consent + start capture (async; permission outcome
-//!                                   comes back via nativeDeliverPermission)
+//!   audio_capture_start(json)       request consent (async; the permission outcome
+//!                                   comes back via nativeDeliverPermission) -> :ok,
+//!                                   or :busy / :denied when refused synchronously
 //!   audio_capture_stop()            tear down
 //!   audio_capture_level() -> [F     latest {rms_db, peak_db}, or a length-1 error code
 //!
@@ -34,7 +35,7 @@ var g_ac_cls: jni.JClass = null;
 export fn Java_io_mob_audiocapture_MobAudioCaptureBridge_nativeRegister(jenv: *jni.JNIEnv, cls: jni.JClass) callconv(.c) void {
     g_ac_cls = jni.newGlobalRef(jenv, cls);
     if (g_ac_cls == null) return;
-    g_ac.start = jni.getStaticMethodID(jenv, cls, "audio_capture_start", "(JLjava/lang/String;)V");
+    g_ac.start = jni.getStaticMethodID(jenv, cls, "audio_capture_start", "(JLjava/lang/String;)I");
     g_ac.stop = jni.getStaticMethodID(jenv, cls, "audio_capture_stop", "()V");
     g_ac.level = jni.getStaticMethodID(jenv, cls, "audio_capture_level", "()[F");
 }
@@ -98,10 +99,17 @@ fn nif_audio_capture_start(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const er
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
     const jstr = jni.newStringUTF(jenv, @ptrCast(&jbuf));
-    jenv.*.CallStaticVoidMethod.?(jenv, g_ac_cls, g_ac.start, pidToJlong(pid), jstr);
+    const code = jenv.*.CallStaticIntMethod.?(jenv, g_ac_cls, g_ac.start, pidToJlong(pid), jstr);
     jni.deleteLocalRef(jenv, jstr);
     detachIfAttached(attached);
-    return erts.atom(env, "ok");
+    // Bridge START_* codes: 0 pending (consent dialog shown), 1 busy (another
+    // request's consent is still pending), 2 denied before any dialog.
+    return switch (code) {
+        0 => erts.atom(env, "ok"),
+        1 => erts.atom(env, "busy"),
+        2 => erts.atom(env, "denied"),
+        else => erts.atom(env, "error"),
+    };
 }
 
 fn nif_audio_capture_stop(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {

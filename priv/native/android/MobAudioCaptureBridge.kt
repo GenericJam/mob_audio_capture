@@ -36,8 +36,9 @@ import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.ActivityResultRegistryOwner
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import java.lang.ref.WeakReference
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.log10
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -52,8 +53,21 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     private const val CODE_NEEDS_RECORD_AUDIO = 2f
     private const val CODE_NOT_CAPTURING = 4f
 
+    // audio_capture_start return codes, mapped to atoms by the zig.
+    private const val START_PENDING = 0 // consent dialog launched; outcome arrives as a message
+    private const val START_BUSY = 1 // another request's consent is still pending
+    private const val START_DENIED = 2 // refused before any dialog (API < 29, no RECORD_AUDIO, no activity)
+
+    // Carries the request token from the consent result to AudioCaptureService.
+    internal const val EXTRA_TOKEN = "io.mob.audiocapture.TOKEN"
+
+    private val defaultUsages = listOf(
+        AudioAttributes.USAGE_MEDIA,
+        AudioAttributes.USAGE_GAME,
+        AudioAttributes.USAGE_UNKNOWN,
+    )
+
     private var activityRef: WeakReference<Activity>? = null
-    private val consentSeq = AtomicLong(0L)
 
     @JvmStatic external fun nativeRegister()
 
@@ -65,93 +79,78 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         activityRef = WeakReference(activity)
     }
 
-    // ── Capture session state ──────────────────────────────────────────────
-    private var capturePid: Long = 0L
-    private var usages: List<Int> = listOf(
-        AudioAttributes.USAGE_MEDIA,
-        AudioAttributes.USAGE_GAME,
-        AudioAttributes.USAGE_UNKNOWN,
-    )
+    // One start() call: the pid that asked, its capture config and, once the user grants
+    // consent, the projection result. The token matches a late consent result or service
+    // start against the request that is still current.
+    private class CaptureRequest(val token: Long, val pid: Long, val usages: List<Int>) {
+        var resultCode: Int = 0
+        var data: Intent? = null
+    }
+
+    // ── Capture session state (guarded by lock) ────────────────────────────
+    private val lock = Any()
+    private var tokenSeq = 0L
+
+    // The request between start() and capture begin (consent dialog, then service start).
+    // At most one; stop() clears it, which makes its consent result stale.
+    private var pending: CaptureRequest? = null
     private var projection: MediaProjection? = null
     private var record: AudioRecord? = null
     private var captureThread: Thread? = null
+    private var serviceRef: WeakReference<Service>? = null
 
     @Volatile private var running = false
     @Volatile private var lastRmsDb = FLOOR_DB
     @Volatile private var lastPeakDb = FLOOR_DB
 
-    private var pendingResultCode: Int = 0
-    private var pendingData: Intent? = null
-    private var serviceRef: WeakReference<Service>? = null
-
     // ── NIF entry points (called from zig) ─────────────────────────────────
 
     @JvmStatic
-    fun audio_capture_start(pid: Long, configJson: String) {
-        if (running) stopInternal()
-        capturePid = pid
-        try {
-            val cfg = JSONObject(configJson)
-            val arr = cfg.optJSONArray("usages")
-            if (arr != null) {
-                val parsed = mutableListOf<Int>()
-                for (i in 0 until arr.length()) {
-                    when (arr.optString(i)) {
-                        "media" -> parsed.add(AudioAttributes.USAGE_MEDIA)
-                        "game" -> parsed.add(AudioAttributes.USAGE_GAME)
-                        "unknown" -> parsed.add(AudioAttributes.USAGE_UNKNOWN)
-                    }
-                }
-                if (parsed.isNotEmpty()) usages = parsed
-            }
-        } catch (_: Throwable) {
-        }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            nativeDeliverPermission(pid, false) // AudioPlaybackCapture is API 29+
-            return
-        }
-        if (!hasRecordAudio()) {
-            // The caller must request RECORD_AUDIO at runtime first.
-            nativeDeliverPermission(pid, false)
-            return
-        }
-
+    fun audio_capture_start(pid: Long, configJson: String): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return START_DENIED // AudioPlaybackCapture is API 29+
+        // The caller must request RECORD_AUDIO at runtime first.
+        if (!hasRecordAudio()) return START_DENIED
         val activity = activityRef?.get() ?: run {
             Log.e(TAG, "no activity for the MediaProjection consent")
-            nativeDeliverPermission(pid, false)
-            return
+            return START_DENIED
         }
         val owner = activity as? ActivityResultRegistryOwner ?: run {
             Log.e(TAG, "activity is not an ActivityResultRegistryOwner")
-            nativeDeliverPermission(pid, false)
-            return
+            return START_DENIED
         }
-        try {
+
+        val req = synchronized(lock) {
+            pending?.let {
+                Log.w(TAG, "start rejected: consent token=${it.token} is still pending")
+                return START_BUSY
+            }
+            if (projection != null) stopLocked()
+            CaptureRequest(++tokenSeq, pid, parseUsages(configJson)).also { pending = it }
+        }
+
+        return try {
             val mpm =
                 activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val key = "mob_audio_capture_consent_${consentSeq.incrementAndGet()}"
             var launcher: ActivityResultLauncher<Intent>? = null
             launcher = owner.activityResultRegistry.register(
-                key,
+                "mob_audio_capture_consent_${req.token}",
                 ActivityResultContracts.StartActivityForResult(),
             ) { result ->
-                if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                    onProjectionResult(result.resultCode, result.data)
-                } else {
-                    nativeDeliverPermission(pid, false)
-                }
                 launcher?.unregister()
+                onConsentResult(req, result.resultCode, result.data)
             }
             launcher.launch(mpm.createScreenCaptureIntent())
+            Log.i(TAG, "consent requested token=${req.token}")
+            START_PENDING
         } catch (e: Throwable) {
             Log.e(TAG, "consent launch failed: ${e.message}")
-            nativeDeliverPermission(pid, false)
+            synchronized(lock) { if (pending === req) pending = null }
+            START_DENIED
         }
     }
 
     @JvmStatic
-    fun audio_capture_stop() = stopInternal()
+    fun audio_capture_stop() = synchronized(lock) { stopLocked() }
 
     // Returns float[2] = [rms_db, peak_db] while capturing, else a length-1 error code.
     @JvmStatic
@@ -161,22 +160,58 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         return floatArrayOf(lastRmsDb, lastPeakDb)
     }
 
+    private fun parseUsages(configJson: String): List<Int> {
+        val arr = try {
+            JSONObject(configJson).optJSONArray("usages")
+        } catch (_: Throwable) {
+            null
+        } ?: return defaultUsages
+        val parsed = mutableListOf<Int>()
+        for (i in 0 until arr.length()) {
+            when (arr.optString(i)) {
+                "media" -> parsed.add(AudioAttributes.USAGE_MEDIA)
+                "game" -> parsed.add(AudioAttributes.USAGE_GAME)
+                "unknown" -> parsed.add(AudioAttributes.USAGE_UNKNOWN)
+            }
+        }
+        return parsed.ifEmpty { defaultUsages }
+    }
+
     // ── Consent → foreground service → AudioRecord ─────────────────────────
 
-    // Consent granted, but getMediaProjection().start() is illegal until a
-    // mediaProjection-typed foreground service is running. Stash the result and start
-    // AudioCaptureService; it foregrounds itself and calls beginCaptureFromService.
-    internal fun onProjectionResult(resultCode: Int, data: Intent?) {
-        if (data == null) return
-        val activity = activityRef?.get() ?: run {
-            Log.e(TAG, "no activity to start the capture service")
-            nativeDeliverPermission(capturePid, false)
+    // Consent answered (main thread). A result for a request that is no longer pending
+    // (stop() ran, or it was already resolved) is dropped: its projection token is
+    // never redeemed, so no MediaProjection is created for it.
+    //
+    // Granted: getMediaProjection() is illegal until a mediaProjection-typed foreground
+    // service is running. Keep the result on the request and start AudioCaptureService
+    // with the token; it foregrounds itself and calls beginCaptureFromService.
+    private fun onConsentResult(req: CaptureRequest, resultCode: Int, data: Intent?) {
+        val granted = resultCode == Activity.RESULT_OK && data != null
+        synchronized(lock) {
+            if (pending !== req) {
+                Log.i(TAG, "dropping stale consent result token=${req.token} granted=$granted; projection not acquired")
+                return
+            }
+            if (granted) {
+                req.resultCode = resultCode
+                req.data = data
+            } else {
+                pending = null
+            }
+        }
+        if (!granted) {
+            nativeDeliverPermission(req.pid, false)
             return
         }
-        pendingResultCode = resultCode
-        pendingData = data
+        val activity = activityRef?.get()
+        if (activity == null) {
+            Log.e(TAG, "no activity to start the capture service")
+            failPending(req)
+            return
+        }
         try {
-            val svc = Intent(activity, AudioCaptureService::class.java)
+            val svc = Intent(activity, AudioCaptureService::class.java).putExtra(EXTRA_TOKEN, req.token)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 activity.startForegroundService(svc)
             } else {
@@ -184,39 +219,79 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
             }
         } catch (e: Throwable) {
             Log.e(TAG, "failed to start capture service: ${e.message}", e)
-            nativeDeliverPermission(capturePid, false)
+            failPending(req)
         }
     }
 
+    private fun failPending(req: CaptureRequest) {
+        val wasPending = synchronized(lock) {
+            (pending === req).also { if (it) pending = null }
+        }
+        if (wasPending) nativeDeliverPermission(req.pid, false)
+    }
+
     // Called from AudioCaptureService.onStartCommand once it is foregrounded as type
-    // mediaProjection. getMediaProjection is now legal.
-    internal fun beginCaptureFromService(service: Service) {
+    // mediaProjection, so getMediaProjection is now legal. A start whose token no longer
+    // matches the pending request is stale: stop that service start and acquire nothing.
+    @RequiresApi(Build.VERSION_CODES.Q)
+    internal fun beginCaptureFromService(service: Service, token: Long, startId: Int) {
+        val (req, granted) = synchronized(lock) {
+            val req = pending
+            val data = req?.data
+            if (req == null || req.token != token || data == null) {
+                Log.i(TAG, "dropping stale capture-service start token=$token; projection not acquired")
+                service.stopSelf(startId)
+                return
+            }
+            pending = null
+            req to startCaptureLocked(service, req, data)
+        }
+        nativeDeliverPermission(req.pid, granted)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun startCaptureLocked(service: Service, req: CaptureRequest, data: Intent): Boolean {
         serviceRef = WeakReference(service)
-        val data = pendingData ?: return
         try {
             val mpm =
                 service.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val proj = mpm.getMediaProjection(pendingResultCode, data) ?: run {
-                nativeDeliverPermission(capturePid, false)
-                return
+            val proj = mpm.getMediaProjection(req.resultCode, data) ?: run {
+                stopLocked()
+                return false
             }
             projection = proj
             proj.registerCallback(
                 object : MediaProjection.Callback() {
-                    override fun onStop() = stopInternal()
+                    // Only tear down if this projection is still the live one; a late
+                    // onStop from an earlier session must not cancel a newer request.
+                    override fun onStop() = synchronized(lock) {
+                        if (projection === proj) stopLocked()
+                    }
                 },
                 null,
             )
-            startRecord(proj)
-            nativeDeliverPermission(capturePid, true)
+            if (!startRecord(service, proj, req.usages)) {
+                Log.e(TAG, "RECORD_AUDIO not granted; capture not started")
+                stopLocked()
+                return false
+            }
+            Log.i(TAG, "capture started token=${req.token}")
+            return true
         } catch (e: Throwable) {
             Log.e(TAG, "capture setup failed: ${e.message}", e)
-            nativeDeliverPermission(capturePid, false)
-            stopInternal()
+            stopLocked()
+            return false
         }
     }
 
-    private fun startRecord(proj: MediaProjection) {
+    // Returns false (nothing started) when RECORD_AUDIO is not granted.
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun startRecord(context: Context, proj: MediaProjection, usages: List<Int>): Boolean {
+        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return false
+        }
         val configBuilder = AudioPlaybackCaptureConfiguration.Builder(proj)
         for (u in usages) configBuilder.addMatchingUsage(u)
         val config = configBuilder.build()
@@ -255,6 +330,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
                 if (n > 0) updateLevels(buf, n)
             }
         }.also { it.start() }
+        return true
     }
 
     private fun updateLevels(buf: ShortArray, n: Int) {
@@ -277,7 +353,11 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         return if (db < FLOOR_DB) FLOOR_DB else min(db, 0f)
     }
 
-    private fun stopInternal() {
+    // Tear everything down and invalidate the pending request, so its consent result or
+    // service start (if still in flight) is dropped as stale. Caller holds lock.
+    private fun stopLocked() {
+        pending?.let { Log.i(TAG, "stop: invalidated pending consent token=${it.token}") }
+        pending = null
         running = false
         try {
             captureThread?.join(200)
@@ -294,11 +374,15 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         } catch (_: Throwable) {
         }
         record = null
-        try {
-            projection?.stop()
-        } catch (_: Throwable) {
-        }
+        val proj = projection
         projection = null
+        if (proj != null) {
+            try {
+                proj.stop()
+            } catch (_: Throwable) {
+            }
+            Log.i(TAG, "projection released")
+        }
         lastRmsDb = FLOOR_DB
         lastPeakDb = FLOOR_DB
         try {
@@ -310,7 +394,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
 
     private fun hasRecordAudio(): Boolean {
         val activity = activityRef?.get() ?: return false
-        return activity.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+        return ContextCompat.checkSelfPermission(activity, android.Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
     }
 
@@ -345,7 +429,12 @@ class AudioCaptureService : Service() {
         } else {
             startForeground(1, notification)
         }
-        MobAudioCaptureBridge.beginCaptureFromService(this)
+        val token = intent?.getLongExtra(MobAudioCaptureBridge.EXTRA_TOKEN, -1L) ?: -1L
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MobAudioCaptureBridge.beginCaptureFromService(this, token, startId)
+        } else {
+            stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 }

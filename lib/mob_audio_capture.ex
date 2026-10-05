@@ -49,6 +49,18 @@ defmodule MobAudioCapture do
   to the calling process. Once granted, capture runs in a foreground service until
   `stop/1`.
 
+  Only one request can wait on consent at a time. Calling `start/2` while an
+  earlier request is still pending (its dialog is open, or consent was granted and
+  capture is still starting) does not open another dialog: the caller gets
+  `{:audio_capture, :start_error, :busy}` instead, and the earlier request keeps
+  its own config and caller. Calling `stop/1` while a request is pending cancels
+  it: granting consent afterwards starts nothing and sends no message. `start/2`
+  while a capture is running stops it and asks for consent again.
+
+  `{:audio_capture, :permission, :denied}` is also sent straight away, without a
+  dialog, below Android 10 (API 29), when `RECORD_AUDIO` hasn't been granted at
+  runtime, or when there is no foreground activity.
+
   Options:
     * `:usages` — which audio usages to capture, any of `:media`, `:game`,
       `:unknown` (default `#{inspect(@default_usages)}`). These are the only usages
@@ -56,9 +68,23 @@ defmodule MobAudioCapture do
   """
   @spec start(Mob.Socket.t(), keyword()) :: Mob.Socket.t()
   def start(socket, opts \\ []) do
-    @nif.audio_capture_start(:json.encode(capture_opts(opts)))
+    result = @nif.audio_capture_start(:json.encode(capture_opts(opts)))
+
+    case start_message(result) do
+      nil -> :ok
+      message -> send(self(), message)
+    end
+
     socket
   end
+
+  @doc false
+  # Maps the start NIF's synchronous result to the message the caller receives now;
+  # `nil` when the outcome comes later (consent pending) or never (iOS).
+  @spec start_message(term()) :: tuple() | nil
+  def start_message(:busy), do: {:audio_capture, :start_error, :busy}
+  def start_message(:denied), do: {:audio_capture, :permission, :denied}
+  def start_message(_), do: nil
 
   @doc """
   Build the config map passed to `audio_capture_start/1`. Pure function exposed so
@@ -87,7 +113,10 @@ defmodule MobAudioCapture do
     decode_level(@nif.audio_capture_level())
   end
 
-  @doc "Stop the active capture session and tear down the foreground service."
+  @doc """
+  Stop the active capture session and tear down the foreground service. Also
+  cancels a request still waiting on the consent dialog (see `start/2`).
+  """
   @spec stop(Mob.Socket.t()) :: Mob.Socket.t()
   def stop(socket) do
     @nif.audio_capture_stop()

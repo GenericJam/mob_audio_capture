@@ -11,7 +11,13 @@
   `stop/1` cancels a pending request: granting consent afterwards starts
   nothing, sends nothing and never acquires a MediaProjection. Before, a
   late consent could start capture after `stop/1` or report to the wrong
-  caller.
+  caller. Once `stop/1` returns, no outcome message for the request it
+  cancelled can still arrive.
+- **Consent survives activity recreation** (MOB-396). If the host activity
+  is recreated while the consent dialog is up, the bridge registers its
+  result callback again on the new activity. Before, the result was lost.
+  Registry keys now carry a per-process nonce, so a result parked by a dead
+  process can't be delivered to a new request.
 - **Android lint clean** (MOB-396). The API 29 capture path is
   `@RequiresApi`-gated (`NewApi`), and `AudioRecord` is built only after an
   explicit `RECORD_AUDIO` check (`MissingPermission`), so a host's

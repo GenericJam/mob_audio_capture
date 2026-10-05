@@ -76,24 +76,27 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     @JvmStatic fun register() = nativeRegister()
 
     override fun setActivity(activity: Activity) {
-        // Swap the activity and read pending under one lock, so a concurrent start()
-        // either launches on this activity or leaves a request this call re-registers.
-        val req = synchronized(lock) {
+        // Swap the activity and read pending under one lock, which narrows the window in
+        // which a concurrent start() could launch on an activity this call replaces.
+        val (req, ownerGone) = synchronized(lock) {
             activityRef = WeakReference(activity)
-            pending?.takeIf { it.data == null && it.activity.get() !== activity }
-        } ?: return
-        // The activity was recreated while the consent dialog was up. The result will be
-        // dispatched to the new activity's registry, which restored the request key but
-        // not our callback; register it again under the same key so the result reaches
-        // us instead of parking there and leaving the request pending until stop().
+            val req = pending?.takeIf { it.data == null && it.activity.get() !== activity } ?: return
+            req to (req.activity.get() == null)
+        }
+        // A new activity while the consent dialog is up (typically the old one was
+        // recreated). Its result may be dispatched to this activity's registry, which
+        // restores the request key but not our callback; register it again under the same
+        // key so the result reaches us instead of parking there until stop().
         val owner = activity as? ActivityResultRegistryOwner ?: run {
             Log.w(TAG, "new activity is not an ActivityResultRegistryOwner; consent token=${req.token} not re-registered")
+            // With the original activity gone too, nothing can receive the result.
+            if (ownerGone) failPending(req)
             return
         }
         try {
             registerConsentCallback(owner, req)
             synchronized(lock) { req.activity = WeakReference(activity) }
-            Log.i(TAG, "activity recreated; consent token=${req.token} re-registered")
+            Log.i(TAG, "new activity; consent token=${req.token} re-registered")
         } catch (e: Throwable) {
             Log.e(TAG, "consent re-register failed: ${e.message}")
             failPending(req)
@@ -117,6 +120,10 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     // ── Capture session state (guarded by lock) ────────────────────────────
     private val lock = Any()
     private var tokenSeq = 0L
+
+    // Per-process nonce in the consent registry key: tokens restart at 1 in every process,
+    // and a restored registry can hold a parked result from a dead process under an old key.
+    private val consentKeyPrefix = "mob_audio_capture_consent_${java.util.UUID.randomUUID()}_"
 
     // The request between start() and capture begin (consent dialog, then service start).
     // At most one; stop() clears it, which makes its consent result stale.
@@ -185,7 +192,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     ): ActivityResultLauncher<Intent> {
         var launcher: ActivityResultLauncher<Intent>? = null
         launcher = owner.activityResultRegistry.register(
-            "mob_audio_capture_consent_${req.token}",
+            consentKeyPrefix + req.token,
             ActivityResultContracts.StartActivityForResult(),
         ) { result ->
             launcher?.unregister()

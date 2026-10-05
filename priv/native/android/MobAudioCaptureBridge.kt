@@ -67,7 +67,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         AudioAttributes.USAGE_UNKNOWN,
     )
 
-    private var activityRef: WeakReference<Activity>? = null
+    @Volatile private var activityRef: WeakReference<Activity>? = null
 
     @JvmStatic external fun nativeRegister()
 
@@ -76,21 +76,23 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     @JvmStatic fun register() = nativeRegister()
 
     override fun setActivity(activity: Activity) {
-        val previous = activityRef?.get()
-        activityRef = WeakReference(activity)
-        if (previous == null || previous === activity) return
-        // The activity was recreated while a consent dialog was up. Its result will be
+        // Swap the activity and read pending under one lock, so a concurrent start()
+        // either launches on this activity or leaves a request this call re-registers.
+        val req = synchronized(lock) {
+            activityRef = WeakReference(activity)
+            pending?.takeIf { it.data == null && it.activity.get() !== activity }
+        } ?: return
+        // The activity was recreated while the consent dialog was up. The result will be
         // dispatched to the new activity's registry, which restored the request key but
         // not our callback; register it again under the same key so the result reaches
-        // us instead of parking there and leaving the request pending forever.
-        val req = synchronized(lock) { pending?.takeIf { it.data == null } } ?: return
-        val owner = activity as? ActivityResultRegistryOwner
-        if (owner == null) {
-            failPending(req)
+        // us instead of parking there and leaving the request pending until stop().
+        val owner = activity as? ActivityResultRegistryOwner ?: run {
+            Log.w(TAG, "new activity is not an ActivityResultRegistryOwner; consent token=${req.token} not re-registered")
             return
         }
         try {
             registerConsentCallback(owner, req)
+            synchronized(lock) { req.activity = WeakReference(activity) }
             Log.i(TAG, "activity recreated; consent token=${req.token} re-registered")
         } catch (e: Throwable) {
             Log.e(TAG, "consent re-register failed: ${e.message}")
@@ -98,10 +100,16 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         }
     }
 
-    // One start() call: the pid that asked, its capture config and, once the user grants
-    // consent, the projection result. The token matches a late consent result or service
-    // start against the request that is still current.
-    private class CaptureRequest(val token: Long, val pid: Long, val usages: List<Int>) {
+    // One start() call: the pid that asked, its capture config, the activity whose
+    // registry holds its consent callback and, once the user grants consent, the
+    // projection result. The token matches a late consent result or service start
+    // against the request that is still current.
+    private class CaptureRequest(
+        val token: Long,
+        val pid: Long,
+        val usages: List<Int>,
+        var activity: WeakReference<Activity>,
+    ) {
         var resultCode: Int = 0
         var data: Intent? = null
     }
@@ -138,22 +146,24 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return START_DENIED // AudioPlaybackCapture is API 29+
         // The caller must request RECORD_AUDIO at runtime first.
         if (!hasRecordAudio()) return START_DENIED
-        val activity = activityRef?.get() ?: run {
-            Log.e(TAG, "no activity for the MediaProjection consent")
-            return START_DENIED
-        }
-        val owner = activity as? ActivityResultRegistryOwner ?: run {
-            Log.e(TAG, "activity is not an ActivityResultRegistryOwner")
-            return START_DENIED
-        }
 
-        val req = synchronized(lock) {
+        val (req, activity, owner) = synchronized(lock) {
             pending?.let {
                 Log.w(TAG, "start rejected: consent token=${it.token} is still pending")
                 return START_BUSY
             }
+            val activity = activityRef?.get() ?: run {
+                Log.e(TAG, "no activity for the MediaProjection consent")
+                return START_DENIED
+            }
+            val owner = activity as? ActivityResultRegistryOwner ?: run {
+                Log.e(TAG, "activity is not an ActivityResultRegistryOwner")
+                return START_DENIED
+            }
             if (projection != null) stopLocked()
-            CaptureRequest(++tokenSeq, pid, parseUsages(configJson)).also { pending = it }
+            val req = CaptureRequest(++tokenSeq, pid, parseUsages(configJson), WeakReference(activity))
+            pending = req
+            Triple(req, activity, owner)
         }
 
         return try {

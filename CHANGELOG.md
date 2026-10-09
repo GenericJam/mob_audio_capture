@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## 0.2.0 - 2026-10-09
 
 ### Added
 - **On-device self-test** (MOB-418). `MobAudioCapture.SelfTest` implements
@@ -10,17 +10,19 @@
   linked, Kotlin bridge registered, Activity handed over);
   `:bridge_not_registered` and `:no_activity` fail. On iOS the Objective-C
   stub's `:unsupported_on_platform` passes (the stub is linked). Run it with
-  `mix mob.selftest` from a host app (mob_dev 0.7.17). Requires mob 0.9.15;
-  `mob_version` in the manifest is now `~> 0.9`.
+  `mix mob.selftest` from a host app (mob_dev 0.7.17).
 
 ### Changed
+- **Requires mob >= 0.9.15** (was `~> 0.7`), for `Mob.Plugin.SelfTest`;
+  `mob_version` in the manifest is now `~> 0.9` (was `~> 0.7`).
 - **Android: `audio_capture_level/0` reports an unregistered bridge and a missing Activity** (MOB-418).
   It answers `:bridge_not_registered` instead of `:unsupported_on_platform`
   when `MobAudioCaptureBridge.register()` never ran or the method-ID lookup
   failed, and `:no_activity` instead of `:needs_record_audio` when the bridge
   holds no live Activity (never handed one, or it was destroyed).
   `output_level/0` returns them as `{:error, :bridge_not_registered}` /
-  `{:error, :no_activity}`.
+  `{:error, :no_activity}`. These are new error values callers of
+  `output_level/0` must handle, hence 0.2.0.
 
 ## 0.1.2 - 2026-10-05
 

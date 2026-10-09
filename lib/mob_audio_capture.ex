@@ -39,7 +39,13 @@ defmodule MobAudioCapture do
   """
   @nif :mob_audio_capture_nif
 
-  @type level_error :: :unsupported_on_platform | :needs_record_audio | :not_capturing | :unknown
+  @type level_error ::
+          :unsupported_on_platform
+          | :needs_record_audio
+          | :not_capturing
+          | :no_activity
+          | :bridge_not_registered
+          | :unknown
 
   @default_usages [:media, :game, :unknown]
 
@@ -107,8 +113,11 @@ defmodule MobAudioCapture do
   there is no measurable signal, or `{:error, reason}`.
 
   `reason` is `:not_capturing` (no active session — call `start/1` first),
-  `:needs_record_audio` (Android permission not granted at runtime), or
-  `:unsupported_on_platform` (iOS).
+  `:needs_record_audio` (Android permission not granted at runtime),
+  `:unsupported_on_platform` (iOS), or, on Android, `:no_activity` (the bridge holds
+  no live Activity: it was never handed one, or the Activity was destroyed) or
+  `:bridge_not_registered` (`MobAudioCaptureBridge.register()` never ran, a host
+  integration bug).
   """
   @spec output_level() :: {float(), float()} | :silent | {:error, level_error()}
   def output_level do

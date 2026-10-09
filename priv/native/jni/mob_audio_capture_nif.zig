@@ -125,12 +125,14 @@ fn nif_audio_capture_stop(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const ert
 
 // audio_capture_level() -> {RmsDb, PeakDb} | error atom. Bridge returns float[2] =
 // [rms_db, peak_db] on success, or float[1] = [code] (2 needs_record_audio,
-// 4 not_capturing) which we map to an atom Mob.AudioCapture.decode_level/1 turns into
-// {:error, _}.
+// 4 not_capturing, 5 no_activity) which we map to an atom MobAudioCapture.decode_level/1
+// turns into {:error, _}. bridge_not_registered: nativeRegister never ran (the plugin
+// bootstrap did not call MobAudioCaptureBridge.register()) or the method-ID lookup
+// failed; MobAudioCapture.SelfTest turns it into a failure (MOB-418).
 fn nif_audio_capture_level(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_ac.level == null) return erts.atom(env, "unsupported_on_platform");
+    if (g_ac_cls == null or g_ac.level == null) return erts.atom(env, "bridge_not_registered");
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
     const arr = jenv.*.CallStaticObjectMethod.?(jenv, g_ac_cls, g_ac.level);
@@ -156,6 +158,7 @@ fn nif_audio_capture_level(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const er
     return switch (@as(i32, @intFromFloat(code[0]))) {
         2 => erts.atom(env, "needs_record_audio"),
         4 => erts.atom(env, "not_capturing"),
+        5 => erts.atom(env, "no_activity"),
         else => erts.atom(env, "error"),
     };
 }

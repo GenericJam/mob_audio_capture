@@ -32,8 +32,8 @@ defmodule MobAudioCapture.MixProject do
 
   defp deps do
     [
-      {:mob, "~> 0.7"},
-      {:mob_dev, "~> 0.6", only: [:dev, :test], runtime: false},
+      {:mob, "~> 0.9 and >= 0.9.15"},
+      {:mob_dev, "~> 0.7.17", only: [:dev, :test], runtime: false},
       {:ex_ast, "~> 0.12", only: [:dev, :test], runtime: false},
       {:reach, "~> 2.7", only: [:dev, :test], runtime: false},
       {:recon, "~> 2.5", only: [:dev, :test]},

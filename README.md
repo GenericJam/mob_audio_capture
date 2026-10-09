@@ -59,6 +59,10 @@ as a warning):
 `RECORD_AUDIO` must be granted at runtime before `start/1` (the manifest declaration
 the plugin contributes is necessary but not sufficient — it's a runtime permission).
 
+**Self-test:** run `mix mob.selftest` from a host app that depends on this plugin
+(mob_dev >= 0.7.17); `MobAudioCapture.SelfTest` checks the NIF and Kotlin bridge on
+Android and the stub on iOS with one `audio_capture_level/0` call.
+
 ## Status
 
 **Device-verified on both platforms, 2026-07-04.**

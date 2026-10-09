@@ -1,7 +1,10 @@
 %{
   name: :mob_audio_capture,
-  mob_version: "~> 0.7",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
+  # On-device proof for `mix mob.selftest` / mob_ci: one audio_capture_level/0 round trip
+  # through the NIF (and the Kotlin bridge on Android); see Mob.Plugin.SelfTest.
+  selftest: MobAudioCapture.SelfTest,
   description:
     "Global device-audio capture via Android MediaProjection + AudioPlaybackCapture " <>
       "(API 29+). Meters / streams the output mix — audio from OTHER apps and native " <>

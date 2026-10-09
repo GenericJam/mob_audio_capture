@@ -114,9 +114,10 @@ defmodule MobAudioCapture do
 
   `reason` is `:not_capturing` (no active session — call `start/1` first),
   `:needs_record_audio` (Android permission not granted at runtime),
-  `:unsupported_on_platform` (iOS), or one of two Android host-integration bugs:
-  `:no_activity` (the plugin bootstrap never handed the bridge an Activity) and
-  `:bridge_not_registered` (`MobAudioCaptureBridge.register()` never ran).
+  `:unsupported_on_platform` (iOS), or, on Android, `:no_activity` (the bridge holds
+  no live Activity: it was never handed one, or the Activity was destroyed) or
+  `:bridge_not_registered` (`MobAudioCaptureBridge.register()` never ran, a host
+  integration bug).
   """
   @spec output_level() :: {float(), float()} | :silent | {:error, level_error()}
   def output_level do

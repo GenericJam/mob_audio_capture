@@ -22,8 +22,10 @@ defmodule MobAudioCapture.SelfTest do
     * `{rms_db, peak_db}` passes: the host app is capturing right now.
     * `:bridge_not_registered` (the bootstrap never called
       `MobAudioCaptureBridge.register()`, or the method-ID lookup failed) and
-      `:no_activity` (`MobActivityAware.setActivity` never ran) fail: capture
-      can never start in that host.
+      `:no_activity` (the bridge holds no live Activity: the bootstrap never
+      called `MobActivityAware.setActivity`, or the Activity was destroyed) fail:
+      capture cannot start in that state, and the self-test runs with the app in
+      the foreground, so a live Activity is expected.
     * `:unsupported_on_platform` fails on Android: that is the iOS stub's
       answer (and what the Android NIF of 0.1.2 and earlier gave for an
       unregistered bridge).
@@ -81,8 +83,9 @@ defmodule MobAudioCapture.SelfTest do
 
   defp classify(:android, :no_activity) do
     {:fail,
-     "audio_capture_level/0 returned :no_activity: MobAudioCaptureBridge has no " <>
-       "Activity (MobActivityAware.setActivity never ran), expected :not_capturing"}
+     "audio_capture_level/0 returned :no_activity: MobAudioCaptureBridge holds no live " <>
+       "Activity (MobActivityAware.setActivity never ran, or the Activity was destroyed) " <>
+       "with the app in the foreground, expected :not_capturing"}
   end
 
   defp classify(:android, :unsupported_on_platform) do

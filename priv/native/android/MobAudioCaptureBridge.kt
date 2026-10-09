@@ -52,7 +52,7 @@ object MobAudioCaptureBridge : io.mob.plugin.MobActivityAware {
     // Error codes returned to the NIF as a length-1 float[] (see the zig).
     private const val CODE_NEEDS_RECORD_AUDIO = 2f
     private const val CODE_NOT_CAPTURING = 4f
-    private const val CODE_NO_ACTIVITY = 5f // MobActivityAware.setActivity never ran
+    private const val CODE_NO_ACTIVITY = 5f // no live Activity (never handed one, or destroyed)
 
     // audio_capture_start return codes, mapped to atoms by the zig.
     private const val START_PENDING = 0 // consent dialog launched; outcome arrives as a message

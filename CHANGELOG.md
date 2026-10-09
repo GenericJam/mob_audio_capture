@@ -14,12 +14,13 @@
   `mob_version` in the manifest is now `~> 0.9`.
 
 ### Changed
-- **Android: `audio_capture_level/0` names host-integration bugs** (MOB-418).
+- **Android: `audio_capture_level/0` reports an unregistered bridge and a missing Activity** (MOB-418).
   It answers `:bridge_not_registered` instead of `:unsupported_on_platform`
   when `MobAudioCaptureBridge.register()` never ran or the method-ID lookup
-  failed, and `:no_activity` instead of `:needs_record_audio` when the
-  bootstrap never handed the bridge an Activity. `output_level/0` returns
-  them as `{:error, :bridge_not_registered}` / `{:error, :no_activity}`.
+  failed, and `:no_activity` instead of `:needs_record_audio` when the bridge
+  holds no live Activity (never handed one, or it was destroyed).
+  `output_level/0` returns them as `{:error, :bridge_not_registered}` /
+  `{:error, :no_activity}`.
 
 ## 0.1.2 - 2026-10-05
 
